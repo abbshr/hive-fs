@@ -20,13 +20,13 @@ class Hive
 
   _initFreeblk: (callback) ->
     read @_recordFile, Buffer(@_size), 0, @_size, 0, (..., buffer) =>
-      @_freelst = @_unpack buffer
-      @_freemap = @_createFreemap()
+      @_freeslotLst = @_unpack buffer
+      @_blklenMap = @_createFreemap()
       callback()
 
   _createFreemap: ->
     freemap = {}
-    for {fragment}, num in @_freelst when fragment?
+    for {fragment}, num in @_freeslotLst when fragment?
       freemap[fragment] ?= []
       freemap[fragment].push num
 
@@ -34,93 +34,126 @@ class Hive
 
   _unpack: (buffer) ->
     freelst = []
-    prev = next = null
+    curr = prev = next = null
 
-    for unit, i in buffer by Hive::UNITSIZE
-      next = if i + Hive::UNITSIZE is buffer.length
-        null
-      else
-        buffer[i + Hive::UNITSIZE..].readUInt32BE 0
+    if buffer.length is Hive::UNITSIZE
+      curr = buffer.readUInt32BE 0
+      freelst[curr] = {prev, next, len: buffer[-1..],readUInt8 0}
+      return freelst
+
+    for unit, i in buffer[...-Hive::UNITSIZE] by Hive::UNITSIZE
+      next = buffer[i + Hive::UNITSIZE].readUInt32BE 0
       curr = unit.readUInt32BE 0
-      freelst[curr] =
-        {prev, next, fragment: unit[-1..].readUInt8 0}
+      freelst[curr] = {prev, next, len: unit[-1..].readUInt8 0}
       prev = curr
 
+    curr = buffer[Hive::UNITSIZE..].readUInt32BE 0
+    next = null
+    freelst[curr] = {prev, next, len: buffer[-1..].readUInt8 0}
     freelst
 
   _pack: (num, fragment) ->
-    buffer = Buffer(UNITSIZE)
+    buffer = Buffer UNITSIZE
     buffer.writeUInt32BE num
     buffer[-1..].writeUInt8 fragment
 
   _mergeFreeblk: (seek, fragment) ->
-    num = seek // Slot::BLKSIZE
-    for info, _num in @_freelst[num..] when info?
-      next_fragment = info.fragment
-      {prev, next} = info
+    curr = seek // Slot::BLKSIZE
+    if @_freeslotLst.length is 0
+      @_freeslotLst[curr] = prev: null, next: null, len: fragment
+      @_blklenMap[fragment] ?= []
+      @_blklenMap[fragment].push curr
+      return
+
+    for item, num in @_freeslotLst[curr..] when item?
+      {prev: nprev, next: nnext, len: nlen} = item
+      ncurr = num + curr
       break
 
-    # TODO:
-    # fix bug in unordered list delete algorithm O(1)
-    if num + fragment is _num
-      prev_fragment = @_freelst[prev]
-      if prev + @_freelst[prev].fragment is num
-        @_freelst[prev] =
-          fragment: prev_fragment + fragment + next_fragment
-          prev: @_freelst[prev].prev
-          next: next
-        delete @_freelst[_num]
-        @_freemap[@_freelst[prev].fragment] ?= []
-        @_freemap[@_freelst[prev].fragment].push prev
-        prevIdx = @_freemap[prev_fragment].indexOf prev
-        @_freemap[prev_fragment][prevIdx] = @_freemap[prev_fragment].pop()
-        nextIdx = @_freemap[next_fragment].indexOf _num
-        @_freemap[next_fragment][nextIdx] = @_freemap[next_fragment].pop()
+    unless ncurr?
+      for num in [curr..0] when item = @_freeslotLst[num]?
+        {prev: pprev, next: pnext, len: plen} = item
+        pcurr = num
+        break
+
+      if pcurr + plen is curr
+        newlen = plen + fragment
+        @_freeslotLst[pcurr].len = newlen
+        @_blklenMap[newlen] ?= []
+        @_blklenMap[newlen].push pcurr
+
+        oldlevellst = @_blklenMap[plen]
+        pInmap = oldlevellst.indexOf pcurr
+        if pInmap is oldlevellst.length - 1
+          oldlevellst.pop()
+        else
+          oldlevellst[pInmap] = oldlevellst.pop()
       else
-        @_freelst[num] =
-          fragment: fragment + next_fragment
-          prev: prev
-          next: next
-        delete @_freelst[_num]
-        @_freemap[@_freelst[num].fragment] ?= []
-        @_freemap[@_freelst[num].fragment].push num
-        nextIdx = @_freemap[next_fragment].indexOf _num
-        @_freemap[next_fragment][nextIdx] = @_freemap[next_fragment].pop()
-    else if prev + @_freelst[prev].fragment is num
-      @_freelst[prev] =
-        fragment: prev_fragment + fragment
-        prev: @_freelst[prev].prev
-        next: _num
-      @_freemap[@_freelst[prev].fragment] ?= []
-      @_freemap[@_freelst[prev].fragment].push prev
-      prevIdx = @_freemap[prev_fragment].indexOf prev
-      @_freemap[prev_fragment][prevIdx] = @_freemap[prev_fragment].pop()
+        @_freeslotLst[curr] = prev: pcurr, next: pnext, len: fragment
+        @_freeslotLst[pcurr].next = curr
     else
-      @_freelst[num] =
-        fragment: fragment
-        prev: prev
-        next: _num
-      @_freemap[fragment] ?= []
-      @_freemap[fragment].push num
+      nprevItem = @_freeslotLst[nprev]
+      if curr + fragment is ncurr
+        delete @_freeslotLst[ncurr]
+
+        oldnlevellst = @_blklenMap[nlen]
+        nInmap = oldnlevellst.indexOf ncurr
+        if nInmap is oldnlevellst.length - 1
+          oldnlevellst.pop()
+        else
+          oldnlevellst[nInmap] = oldnlevellst.pop()
+
+        if nprevItem? and nprev + nprevItem.len is curr
+          {len: plen} = nprevItem
+          newlen = plen + fragment + nlen
+          @_freeslotLst[nprev] = prev: nprev, next: nnext, len: newlen
+          @_blklenMap[newlen] ?= []
+          @_blklenMap[newlen].push nprev
+
+          oldplevellst = @_blklenMap[plen]
+          pInmap = oldplevellst.indexOf nprev
+          if pInmap is oldplevellst.length - 1
+            oldplevellst.pop()
+          else
+            oldplevellst[pInmap] = oldplevellst.pop()
+        else
+          newlen = fragment + nlen
+          @_freeslotLst[curr] = prev: nprev, next: nnext, len: newlen
+      else if nprevItem? and nprev + nprevItem.len is curr
+        {len: plen} = nprevItem
+        newlen = plen + fragment
+        @_freeslotLst[nprev].len = newlen
+
+        oldplevellst = @_blklenMap[plen]
+        pInmap = oldplevellst.indexOf nprev
+        if pInmap is oldplevellst.length - 1
+          oldplevellst.pop()
+        else
+          oldplevellst[pInmap] = oldplevellst.pop()
+      else
+        @_freeslotLst[curr] = prev: nprev, next: ncurr, len: fragment
+        @_freeslotLst[nprev].next = @_freeslotLst[ncurr].prev = curr
+        @_blklenMap[fragment] ?= []
+        @_blklenMap[fragment].push curr
 
   _getAvailiableSeek: (len) ->
-    freelst = @_freemap[len..][0]
-    if freelst?.length > 0
-      num = freelst.pop()
-      {prev, next, fragment} = @_freelst[num]
-      diff = fragment - num - len
+    for levellst in @_blklenMap[len..] when freelst?.length
+      curr = levellst.pop()
+      {prev, next, len: alen} = @_freeslotLst[curr]
+      delete @_freeslotLst[curr]
+      diff = alen - len
       if diff > 0
-        @_freelst[prev].next = @_freelst[next].prev = num + len
-        @_freelst[num + len] = {prev, next, fragment: diff}
-        @_freemap[diff] ?= []
-        @_freemap[diff].push num + len
+        newcurr = curr + len
+        @_freeslotLst[newcurr] = {prev, next, len: diff}
+        @_freeslotLst[prev].next = @_freeslotLst[next].prev = newcurr
+        @_blklenMap[diff] ?= []
+        @_blklenMap[diff].push newcurr
       else
-        @_freelst[prev].next = next
-        @_freelst[next].prev = prev
+        @_freeslotLst[prev].next = next
+        @_freeslotLst[next].prev = prev
+      return curr
 
-      delete @_freelst[num]
-    else
-      @slot.size
+    @slot.size
 
   alloc: (data, callback) ->
     {idx} = data
