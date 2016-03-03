@@ -1,6 +1,7 @@
 {openSync, write, read, fstatSync, close} = require 'fs'
 Index = require './seek'
 Slot = require './slot'
+{rm: unorderlstRm} = require '../util/unorderlst'
 
 class Hive
 
@@ -10,9 +11,22 @@ class Hive
     @_recordFile = openSync args.file, 'a+'
     @index = new Index args.indexcfg
     @slot = new Slot args.slotcfg
+    @_timer = null
 
   init: (callback) ->
-    @index.init => @slot.init => @_initFreeblk => callback this
+    @index.init => @slot.init => @_initFreeblk =>
+      # write back to recordFile by a interval
+      @_writeback()
+      callback this
+
+  _writeback: ->
+    return if @_closed
+    @_timer = setTimeout =>
+      stash = ([num, item.len] for item, num in @_freeslotLst when item?)
+      buffer = Buffer Hive::UNITSIZE * stash.length
+      @_pack unit, stash[i]... for unit, i in buffer by Hive::UNITSIZE
+      @_writeback()
+    , 30 * 1000
 
   _getSize: ->
     {size} = fstatSync @_recordFile
@@ -52,114 +66,104 @@ class Hive
     freelst[curr] = {prev, next, len: buffer[-1..].readUInt8 0}
     freelst
 
-  _pack: (num, fragment) ->
-    buffer = Buffer UNITSIZE
+  _pack: (buffer, num, fragment) ->
     buffer.writeUInt32BE num
-    buffer[-1..].writeUInt8 fragment
+    buffer[-1..][0] = fragment
+
+  _levellstAppend: (level, elem) ->
+    @_blklenMap[level] ?= []
+    @_blklenMap[level].push elem
+
+  _cellBlklen: (size) ->
+    Math.ceil size // Slot::BLKSIZE
 
   _mergeFreeblk: (seek, fragment) ->
+    # location point
     curr = seek // Slot::BLKSIZE
+    next = pnext = null
+    prev = nprev = null
+    nnext = null
+    pprev = null
+
+    # fragment length
+    len = fragment
+    nlen = NaN
+    plen = NaN
+
+    # append first free slot
     if @_freeslotLst.length is 0
-      @_freeslotLst[curr] = prev: null, next: null, len: fragment
-      @_blklenMap[fragment] ?= []
-      @_blklenMap[fragment].push curr
+      @_freeslotLst[curr] = {prev, next, len}
+      @_levellstAppend len, curr
       return
 
-    for item, num in @_freeslotLst[curr..] when item?
-      {prev: nprev, next: nnext, len: nlen} = item
-      ncurr = num + curr
-      break
-
-    unless ncurr?
-      for num in [curr..0] when item = @_freeslotLst[num]?
-        {prev: pprev, next: pnext, len: plen} = item
-        pcurr = num
+    # calculate the location points
+    sublst = @_freeslotLst[curr..]
+    if sublst.length > 0
+      for item, i in sublst when item?
+        {prev: nprev, next: nnext, len: nlen} = item
+        prev = nprev
+        next = ncurr = i + curr
+        prevItem = @_freeslotLst[prev]
+        {prev: pprev, len: plen} = prevItem if prevItem?
+        break
+    else
+      for i in [curr..0] when @_freeslotLst[i]?
+        {prev: pprev, len: plen} = @_freeslotLst[i]
+        prev = pcurr = i
         break
 
-      if pcurr + plen is curr
-        newlen = plen + fragment
-        @_freeslotLst[pcurr].len = newlen
-        @_blklenMap[newlen] ?= []
-        @_blklenMap[newlen].push pcurr
+    if prev + plen is curr
+      item = @_freeslotLst[prev]
+      item.len += len
+      unorderlstRm @_blklenMap[plen], prev
+      if curr + len is next
+        # merge with prev & next
+        item.next = nnext
+        item.len += nlen
+        @_levellstAppend item.len, prev
 
-        oldlevellst = @_blklenMap[plen]
-        pInmap = oldlevellst.indexOf pcurr
-        if pInmap is oldlevellst.length - 1
-          oldlevellst.pop()
-        else
-          oldlevellst[pInmap] = oldlevellst.pop()
+        delete @_freeslotLst[next]
+        unorderlstRm @_blklenMap[nlen], next
       else
-        @_freeslotLst[curr] = prev: pcurr, next: pnext, len: fragment
-        @_freeslotLst[pcurr].next = curr
+        # merge with prev
+        @_levellstAppend item.len, prev
     else
-      nprevItem = @_freeslotLst[nprev]
-      if curr + fragment is ncurr
-        delete @_freeslotLst[ncurr]
+      item = @_freeslotLst[curr] = {prev, next, len}
+      @_freeslotLst[prev]?.next = curr
+      @_freeslotLst[next]?.prev = curr
+      if curr + len is next
+        # merge with next
+        item.next = nnext
+        item.len += nlen
+        @_levellstAppend item.len, curr
 
-        oldnlevellst = @_blklenMap[nlen]
-        nInmap = oldnlevellst.indexOf ncurr
-        if nInmap is oldnlevellst.length - 1
-          oldnlevellst.pop()
-        else
-          oldnlevellst[nInmap] = oldnlevellst.pop()
+        delete @_freeslotLst[next]
+        unorderlstRm @_blklenMap[nlen], next
 
-        if nprevItem? and nprev + nprevItem.len is curr
-          {len: plen} = nprevItem
-          newlen = plen + fragment + nlen
-          @_freeslotLst[nprev] = prev: nprev, next: nnext, len: newlen
-          @_blklenMap[newlen] ?= []
-          @_blklenMap[newlen].push nprev
-
-          oldplevellst = @_blklenMap[plen]
-          pInmap = oldplevellst.indexOf nprev
-          if pInmap is oldplevellst.length - 1
-            oldplevellst.pop()
-          else
-            oldplevellst[pInmap] = oldplevellst.pop()
-        else
-          newlen = fragment + nlen
-          @_freeslotLst[curr] = prev: nprev, next: nnext, len: newlen
-      else if nprevItem? and nprev + nprevItem.len is curr
-        {len: plen} = nprevItem
-        newlen = plen + fragment
-        @_freeslotLst[nprev].len = newlen
-
-        oldplevellst = @_blklenMap[plen]
-        pInmap = oldplevellst.indexOf nprev
-        if pInmap is oldplevellst.length - 1
-          oldplevellst.pop()
-        else
-          oldplevellst[pInmap] = oldplevellst.pop()
-      else
-        @_freeslotLst[curr] = prev: nprev, next: ncurr, len: fragment
-        @_freeslotLst[nprev].next = @_freeslotLst[ncurr].prev = curr
-        @_blklenMap[fragment] ?= []
-        @_blklenMap[fragment].push curr
-
-  _getAvailiableSeek: (len) ->
-    for levellst in @_blklenMap[len..] when freelst?.length
+  _getAvailiableSeek: (fragment) ->
+    for levellst in @_blklenMap[fragment..] when freelst?.length
       curr = levellst.pop()
-      {prev, next, len: alen} = @_freeslotLst[curr]
+      {prev, next, len} = @_freeslotLst[curr]
       delete @_freeslotLst[curr]
-      diff = alen - len
+      diff = len - fragment
       if diff > 0
-        newcurr = curr + len
+        newcurr = curr + fragment
         @_freeslotLst[newcurr] = {prev, next, len: diff}
         @_freeslotLst[prev].next = @_freeslotLst[next].prev = newcurr
-        @_blklenMap[diff] ?= []
-        @_blklenMap[diff].push newcurr
+        @_levellstAppend diff, newcurr
       else
         @_freeslotLst[prev].next = next
         @_freeslotLst[next].prev = prev
-      return curr
+      return curr * Slot::BLKSIZE
 
     @slot.size
 
   alloc: (data, callback) ->
     {idx} = data
     cell = @slot.alloc data
-    seek = @_getAvailiableSeek cell.blklen
-    @index.ensure idx, seek, cell.blklen, (err) =>
+    blklen = @_cellBlklen cell.size
+    seek = @_getAvailiableSeek blklen
+    @index.ensure idx, seek, blklen, (err) =>
       @slot.push seek, cell, callback
 
   seek: (idx, callback) ->
@@ -169,13 +173,14 @@ class Hive
 
   rewrite: (idx, data, callback) ->
     cell = @slot.alloc data
+    blklen = @_cellBlklen cell.size
     @index.seekfor idx, (err, info) =>
       {seek, fragment} = info
       return callback new Error "Index not found" unless seek?
-      if cell.blklen > fragment
+      if blklen > fragment
         # realloc
-        seek = @_getAvailiableSeek cell.blklen
-        @index.update idx, seek, cell.blklen, (err) =>
+        seek = @_getAvailiableSeek blklen
+        @index.update idx, seek, blklen, (err) =>
           @slot.push seek, cell, callback
       else
         @slot.push seek, cell, callback
@@ -190,7 +195,9 @@ class Hive
   _close: (callback) -> close @_recordFile, callback
 
   close: (callback) ->
-    @index.close => @_close => @slot.close => callback()
+    @index.close => @_close => @slot.close =>
+      @_closed = yes
+      callback()
 
 module.exports = (args, callback) ->
   new Hive args
