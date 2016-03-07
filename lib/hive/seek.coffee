@@ -47,7 +47,8 @@ class Index
     if idx of @_cache
       @_updateMeta idx, seek, fragment, timestamp, callback
     else
-      idxData = @_pack idx, seek, fragment, timestamp, Index::USED
+      tuple = Buffer Index::TUPLESIZE
+      idxData = @_pack tuple, idx, seek, fragment, timestamp, Index::USED
       [location, pos] = @_getAvailiable()
       @_cache[idx] = {seek, fragment, timestamp, pos}
 
@@ -102,21 +103,19 @@ class Index
     else
       callback null
 
-  _pack: (idx, seek, fragment, timestamp, state) ->
-    tuple = Buffer Index::TUPLESIZE
-    tuple.fill Index::NULL
+  _pack: (tuple, idx, seek, fragment, timestamp, state) ->
     tuple[0] = state
     tuple[1..4].writeUInt32BE seek
     tuple[5] = fragment
     tuple[6..13].writeDoubleBE timestamp
-    tuple[14..].utf8Write idx
+    tuple[14..].fill(Index::NULL).utf8Write idx
     tuple
 
   _unpack: (buffer) ->
     [idxlst, freelst] = [{}, []]
 
     for _, i in buffer by Index::TUPLESIZE
-      tuple = buffer[i .. i + Index::TUPLESIZE]
+      tuple = buffer[i ... i + Index::TUPLESIZE]
       state = tuple[0]
       pos = i // Index::TUPLESIZE
       if state is Index::FREE
@@ -133,9 +132,20 @@ class Index
 
     [idxlst, freelst]
 
-  close: (callback = ->) ->
-    close @_seekFile, callback
+  close: (callback = ->) -> close @_seekFile, (err) => @_arrange callback
 
-  # _arrange: (callback = ->) ->
+  _arrange: (callback = ->) ->
+    @_tupleCount = count = @_tupleCount - @_freelst.length
+    @_size = @_tupleCount * Index::TUPLESIZE
+    return callback() if count is 0
+
+    dirty = Buffer count * Index::TUPLESIZE
+    i = 0
+    for idx, info = {seek, fragment, timestamp} of @_cache
+      info.pos = i // Index::TUPLESIZE
+      tuple = dirty[i ... i = i + Index::TUPLESIZE]
+      @_pack tuple, idx, seek, fragment, timestamp, Index::USED
+
+    fs.writeFile @_file, dirty, (err) -> callback err
 
 module.exports = Index
