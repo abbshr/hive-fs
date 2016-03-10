@@ -3,7 +3,7 @@ Cell = require '../cell'
 
 class Slot
 
-  BLKSIZE: 2 + 2 ** 16 # 64KB per slot
+  BLKSIZE: 2 ** 10 # 1KB per slot
 
   constructor: (args) ->
     @_flag = if args.producer then 'a+' else 'r'
@@ -16,6 +16,7 @@ class Slot
   init: (callback) ->
     @_slotFile = openSync @_file, @_flag
     @size = @flushSize()
+    callback()
 
   alloc: (data) ->
     if @_flag is 'r'
@@ -35,10 +36,11 @@ class Slot
           callback err
 
   skipto: (seek, fragment, callback) ->
+    size = Slot::BLKSIZE * fragment
     read @_slotFile
-      , Buffer(Slot::BLKSIZE * fragment)
+      , Buffer(size)
       , 0
-      , Slot::BLKSIZE * fragment, seek, (err, byte, buffer) =>
+      , size, seek, (err, byte, buffer) =>
         cell = Cell.from buffer
         callback err, cell
 
