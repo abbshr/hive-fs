@@ -1,8 +1,10 @@
+{BYTESIZE, BLKSIZE, NULL} = require '../constants'
 
 class Cell
 
   # KEYSIZE: 32
-  BYTESIZE: 4
+  # BYTESIZE: 4
+
   # IDXSIZE: 256
   # NULL: 0x00
 
@@ -15,8 +17,16 @@ class Cell
     # idx = Buffer Cell::IDXSIZE
     # idx.fill Cell::NULL
     # idx.utf8Write @data.idx
-    buffer = Buffer JSON.stringify @data
-    size = Buffer Cell::BYTESIZE
+    payload = JSON.stringify @data
+    payloadLen = Buffer.byteLength payload, 'utf-8'
+    size = payloadLen + BYTESIZE
+    @blklen = Math.ceil size / BLKSIZE
+    @size = @blklen * BLKSIZE
+    @buffer = Buffer @size
+
+    @buffer.writeUInt32BE payloadLen
+    @buffer.write payload, BYTESIZE
+    @buffer.fill NULL, size
     # buffer = []
     # for key, value of @data
     #   head = Buffer 36
@@ -27,9 +37,6 @@ class Cell
     #   buffer.push head, value
     #
     # @buffer = Buffer.concat [idx, buffer...]
-    @size = buffer.length + Cell::BYTESIZE
-    size.writeUInt32BE @size
-    @buffer = Buffer.concat [size, buffer]
 
   @from: (buffer) ->
     # size = buffer.length
@@ -40,9 +47,8 @@ class Cell
     # nullbyte = idx.indexOf Cell::NULL
     # idx = idx[0...nullbyte] if !!~nullbyte
     # data.idx = idx.toString 'utf-8'
-    cellsize = buffer[0...4].readUInt32BE 0
-    buffer = buffer[0...cellsize]
-    data = JSON.parse buffer[4..].toString 'utf-8'
+    payloadLen = buffer.readUInt32BE 0
+    data = JSON.parse buffer.toString 'utf-8', BYTESIZE, BYTESIZE + payloadLen
 
     # while cursor < size
     #   key = buffer[cursor ... (cursor = cursor + Cell::KEYSIZE)].toString 'utf-8'
@@ -55,6 +61,7 @@ class Cell
 
     cell = new Cell data, buffer
     cell.size = buffer.length
+    cell.blklen = buffer.length // BLKSIZE
     cell
 
 module.exports = Cell

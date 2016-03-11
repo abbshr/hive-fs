@@ -1,204 +1,223 @@
-{openSync, write, read, fstatSync, close} = require 'fs'
+{openSync, readSync, write, read, fstatSync, close} = require 'fs'
+path = require 'path'
 Index = require './seek'
 Slot = require './slot'
 {rm: unorderlstRm} = require '../util/unorderlst'
+{UNITSIZE, BLKSIZE} = require '../constants'
 
 class Hive
+  # parameters
+  # @dirname: '/tmp'
+  # @basename: 'hive-fs'
+  # @rw: true
+  constructor: (args = {}) ->
+    args.rw ?= yes
+    dirname = args.dirname ? '/tmp'
+    basename = args.basename ? 'hive-fs'
+    baseFile = path.join dirname, basename
+    recordFile = "#{baseFile}.rcd"
+    seekFile = "#{baseFile}.idx"
+    slotFile = "#{baseFile}.slot"
 
-  UNITSIZE: 5
+    @index = new Index producer: args.rw, file: seekFile
+    @slot = new Slot producer: args.rw, file: slotFile
 
-  constructor: (args) ->
-    @_recordFile = openSync args.file, 'a+'
-    @index = new Index args.indexcfg
-    @slot = new Slot args.slotcfg
-    @_timer = null
+    @_recordFile = openSync recordFile, 'a+'
+    @_size = @_updateSize()
+    @_freeSlotLst = []
+    @_blklenMap = []
+    @_init() if @_size > 0
 
-  init: (callback) ->
-    @index.init => @slot.init => @_initFreeblk =>
-      # write back to recordFile by a interval
-      @_writeback()
-      callback this
+  _init: ->
+    buffer = Buffer @_size
+    readSync @_recordFile, buffer, 0, @_size, 0
+    @_freeSlotLst = @_unpack buffer
+    @_blklenMap = @_yieldFreemap @_freeSlotLst
 
-  _writeback: ->
-    return if @_closed
-    @_timer = setTimeout =>
-      stash = ([num, item.len] for item, num in @_freeslotLst when item?)
-      buffer = Buffer Hive::UNITSIZE * stash.length
-      @_pack unit, stash[i]... for unit, i in buffer by Hive::UNITSIZE
-      @_writeback()
-    , 30 * 1000
+  # _writeback: ->
+  #   return if @_closed
+  #   @_timer = setTimeout =>
+  #     stash = ([num, item.len] for item, num in @_freeSlotLst when item?)
+  #     buffer = Buffer UNITSIZE * stash.length
+  #     @_pack unit, stash[i]... for unit, i in buffer by UNITSIZE
+  #
+  #     @_writeback()
+  #   , 30 * 1000
 
-  _getSize: ->
+  _updateSize: ->
     {size} = fstatSync @_recordFile
     size
 
-  _initFreeblk: (callback) ->
-    read @_recordFile, Buffer(@_size), 0, @_size, 0, (..., buffer) =>
-      @_freeslotLst = @_unpack buffer
-      @_blklenMap = @_createFreemap()
-      callback()
+  _levelLstAppend: (map, level, elem) ->
+    map[level] ?= []
+    map[level].push elem
 
-  _createFreemap: ->
-    freemap = {}
-    for {fragment}, num in @_freeslotLst when fragment?
-      freemap[fragment] ?= []
-      freemap[fragment].push num
+  _cellBlklen: (size) ->
+    Math.ceil size / BLKSIZE
 
+  _yieldFreemap: (freeslotLst) ->
+    freemap = []
+    for item, curr in freeSlotLst when item?
+      @_levelLstAppend freemap, item.len, curr
     freemap
 
   _unpack: (buffer) ->
     freelst = []
     curr = prev = next = null
 
-    if buffer.length is Hive::UNITSIZE
+    if buffer.length is UNITSIZE
       curr = buffer.readUInt32BE 0
-      freelst[curr] = {prev, next, len: buffer[-1..],readUInt8 0}
+      len = buffer[4]
+      freelst[curr] = {prev, next, len}
       return freelst
 
-    for unit, i in buffer[...-Hive::UNITSIZE] by Hive::UNITSIZE
-      next = buffer[i + Hive::UNITSIZE].readUInt32BE 0
-      curr = unit.readUInt32BE 0
-      freelst[curr] = {prev, next, len: unit[-1..].readUInt8 0}
+    for _, i in buffer[...-UNITSIZE] by UNITSIZE
+      next = buffer.readUInt32BE i + UNITSIZE
+      curr = buffer.readUInt32BE i
+      len = buffer[i + 4]
+      freelst[curr] = {prev, next, len}
       prev = curr
 
-    curr = buffer[Hive::UNITSIZE..].readUInt32BE 0
+    curr = buffer.readUInt32BE i
+    len = buffer[i + 4]
     next = null
-    freelst[curr] = {prev, next, len: buffer[-1..].readUInt8 0}
+    freelst[curr] = {prev, next, len}
     freelst
 
-  _pack: (buffer, num, fragment) ->
-    buffer.writeUInt32BE num
-    buffer[-1..][0] = fragment
+  _pack: (buffer, curr, len) ->
+    buffer.writeUInt32BE curr
+    buffer[UNITSIZE - 1] = len
 
-  _levellstAppend: (level, elem) ->
-    @_blklenMap[level] ?= []
-    @_blklenMap[level].push elem
-
-  _cellBlklen: (size) ->
-    Math.ceil size // Slot::BLKSIZE
-
-  _mergeFreeblk: (seek, fragment) ->
-    # location point
-    curr = seek // Slot::BLKSIZE
+  _mergeFreeblk: (seek, len) ->
+    # slot offset
+    curr = seek // BLKSIZE
     next = pnext = null
     prev = nprev = null
     nnext = null
     pprev = null
 
     # fragment length
-    len = fragment
     nlen = NaN
     plen = NaN
 
     # append first free slot
-    if @_freeslotLst.length is 0
-      @_freeslotLst[curr] = {prev, next, len}
-      @_levellstAppend len, curr
+    if @_freeSlotLst.length is 0
+      @_freeSlotLst[curr] = {prev, next, len}
+      @_levelLstAppend @_blklenMap, len, curr
       return
 
-    # calculate the location points
-    sublst = @_freeslotLst[curr..]
+    # calculate the prev & next free continous-slots offset
+    sublst = @_freeSlotLst[curr..]
     if sublst.length > 0
       for item, i in sublst when item?
         {prev: nprev, next: nnext, len: nlen} = item
         prev = nprev
-        next = ncurr = i + curr
-        prevItem = @_freeslotLst[prev]
-        {prev: pprev, len: plen} = prevItem if prevItem?
+        next = i + curr
+        if prevItem = @_freeSlotLst[prev]
+          {prev: pprev, len: plen} = prevItem
         break
     else
-      for i in [curr..0] when @_freeslotLst[i]?
-        {prev: pprev, len: plen} = @_freeslotLst[i]
-        prev = pcurr = i
+      for i in [curr..0] when @_freeSlotLst[i]?
+        {prev: pprev, len: plen} = @_freeSlotLst[i]
+        prev = i
         break
 
     if prev + plen is curr
-      item = @_freeslotLst[prev]
+      # merge with prev
+      item = @_freeSlotLst[prev]
       item.len += len
       unorderlstRm @_blklenMap[plen], prev
       if curr + len is next
         # merge with prev & next
         item.next = nnext
         item.len += nlen
-        @_levellstAppend item.len, prev
-
-        delete @_freeslotLst[next]
+        delete @_freeSlotLst[next]
         unorderlstRm @_blklenMap[nlen], next
-      else
-        # merge with prev
-        @_levellstAppend item.len, prev
+
+      @_levelLstAppend @_blklenMap, item.len, prev
     else
-      item = @_freeslotLst[curr] = {prev, next, len}
-      @_freeslotLst[prev]?.next = curr
-      @_freeslotLst[next]?.prev = curr
+      item = @_freeSlotLst[curr] = {prev, next, len}
+      @_freeSlotLst[prev]?.next = curr
+      @_freeSlotLst[next]?.prev = curr
       if curr + len is next
         # merge with next
         item.next = nnext
         item.len += nlen
-        @_levellstAppend item.len, curr
-
-        delete @_freeslotLst[next]
+        @_levelLstAppend @_blklenMap, item.len, curr
+        delete @_freeSlotLst[next]
         unorderlstRm @_blklenMap[nlen], next
 
-  _getAvailiableSeek: (fragment) ->
-    for levellst in @_blklenMap[fragment..] when freelst?.length
+  _getAvailiableSeek: (slotlen) ->
+    for levellst in @_blklenMap[slotlen..] when levellst?.length
       curr = levellst.pop()
-      {prev, next, len} = @_freeslotLst[curr]
-      delete @_freeslotLst[curr]
-      diff = len - fragment
+      {prev, next, len} = @_freeSlotLst[curr]
+      delete @_freeSlotLst[curr]
+      diff = len - slotlen
       if diff > 0
-        newcurr = curr + fragment
-        @_freeslotLst[newcurr] = {prev, next, len: diff}
-        @_freeslotLst[prev].next = @_freeslotLst[next].prev = newcurr
-        @_levellstAppend diff, newcurr
+        newcurr = curr + slotlen
+        @_freeSlotLst[newcurr] = {prev, next, len: diff}
+        @_freeSlotLst[prev]?.next = @_freeSlotLst[next]?.prev = newcurr
+        @_levelLstAppend @_blklenMap, diff, newcurr
       else
-        @_freeslotLst[prev].next = next
-        @_freeslotLst[next].prev = prev
-      return curr * Slot::BLKSIZE
+        @_freeSlotLst[prev]?.next = next
+        @_freeSlotLst[next]?.prev = prev
+      return curr * BLKSIZE
 
     @slot.size
 
-  alloc: (data, callback) ->
-    {idx} = data
-    cell = @slot.alloc data
-    blklen = @_cellBlklen cell.size
-    seek = @_getAvailiableSeek blklen
-    @index.ensure idx, seek, blklen, (err) =>
+  _close: (callback) -> close @_recordFile, callback
+
+  _alloc: (idx, seek, blklen, ts, cell, callback) ->
+    @index.ensure idx, seek, blklen, ts, (err) =>
+      # console.log 'ensure'
       @slot.push seek, cell, callback
+
+  write: (data, callback) ->
+    {idx, ts} = data
+    unless idx? and ts?
+      err = new Error "Index and TimeStamp not found"
+      return callback err
+
+    cell = @slot.alloc data
+    {blklen} = cell
+
+    @index.seekfor idx, (err, info) =>
+      if info?
+        {seek, len, timestamp} = info
+        return callback null if timestamp > ts
+        diff = blklen - len
+        if diff < 0
+          freeSeek = seek + blklen * BLKSIZE
+          @_mergeFreeblk freeSeek, -diff
+        else if diff > 0
+          @_mergeFreeblk seek, len
+          seek = @_getAvailiableSeek blklen
+      else
+        seek = @_getAvailiableSeek blklen
+        # console.log seek, 'seek'
+
+      @_alloc idx, seek, blklen, ts, cell, callback
 
   seek: (idx, callback) ->
     @index.seekfor idx, (err, info) =>
-      {seek, fragment} = info
-      @slot.skipto seek, fragment, callback
-
-  rewrite: (idx, data, callback) ->
-    cell = @slot.alloc data
-    blklen = @_cellBlklen cell.size
-    @index.seekfor idx, (err, info) =>
-      {seek, fragment} = info
-      return callback new Error "Index not found" unless seek?
-      if blklen > fragment
-        # realloc
-        seek = @_getAvailiableSeek blklen
-        @index.update idx, seek, blklen, (err) =>
-          @slot.push seek, cell, callback
+      if info?
+        {seek, len} = info
+        @slot.skipto seek, len, callback
       else
-        @slot.push seek, cell, callback
+        callback null, null
 
   free: (idx, callback) ->
     @index.seekfor idx, (err, info) =>
-      {seek, fragment} = info
-      return callback null unless seek?
-      @_mergeFreeblk seek, fragment
-      @index.drop idx, callback
-
-  _close: (callback) -> close @_recordFile, callback
+      if info?
+        {seek, len} = info
+        @_mergeFreeblk seek, len
+        @index.drop idx, callback
+      else
+        callback null
 
   close: (callback) ->
     @index.close => @_close => @slot.close =>
-      @_closed = yes
-      callback()
+      # @_closed = yes
+      @_writeback -> callback()
 
-module.exports = (args, callback) ->
-  new Hive args
-  .init callback
+module.exports = Hive

@@ -1,22 +1,17 @@
 {openSync, write, read, fstatSync, close} = require 'fs'
 Cell = require '../cell'
+{BLKSIZE} = require '../constants'
 
 class Slot
 
-  BLKSIZE: 2 ** 10 # 1KB per slot
-
   constructor: (args) ->
-    @_flag = if args.producer then 'a+' else 'r'
-    @_file = args.file
+    flag = if args.producer then 'a+' else 'r'
+    @_slotFile = openSync args.file, flag
+    @size = @updateSize()
 
-  flushSize: ->
+  updateSize: ->
     {size} = fstatSync @_slotFile
     size
-
-  init: (callback) ->
-    @_slotFile = openSync @_file, @_flag
-    @size = @flushSize()
-    callback()
 
   alloc: (data) ->
     if @_flag is 'r'
@@ -32,11 +27,12 @@ class Slot
         , cell.buffer
         , 0
         , cell.size, seek, (err, byte, buffer) =>
+          # console.log @size, byte, seek
           @size += byte if seek is @size
           callback err
 
-  skipto: (seek, fragment, callback) ->
-    size = Slot::BLKSIZE * fragment
+  skipto: (seek, len, callback) ->
+    size = BLKSIZE * len
     read @_slotFile
       , Buffer(size)
       , 0
