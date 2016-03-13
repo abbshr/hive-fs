@@ -132,6 +132,7 @@ class Hive
         item.next = nnext
         item.len += nlen
         delete @_freeSlotLst[next]
+        # @_freeSlotLst.splice next, 1
         unorderlstRm @_blklenMap[nlen], next
 
       @_levelLstAppend @_blklenMap, item.len, prev
@@ -143,15 +144,18 @@ class Hive
         # merge with next
         item.next = nnext
         item.len += nlen
-        @_levelLstAppend @_blklenMap, item.len, curr
         delete @_freeSlotLst[next]
+        # @_freeSlotLst.splice next, 1
         unorderlstRm @_blklenMap[nlen], next
+
+      @_levelLstAppend @_blklenMap, item.len, curr
 
   _getAvailiableSeek: (slotlen) ->
     for levellst in @_blklenMap[slotlen..] when levellst?.length
       curr = levellst.pop()
       {prev, next, len} = @_freeSlotLst[curr]
       delete @_freeSlotLst[curr]
+      # @_freeSlotLst.splice curr, 1
       diff = len - slotlen
       if diff > 0
         newcurr = curr + slotlen
