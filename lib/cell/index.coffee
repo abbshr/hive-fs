@@ -1,4 +1,4 @@
-{BYTESIZE, BLKSIZE, NULL} = require '../constants'
+{BYTE_SIZE, BLK_SIZE, NULL} = require '../constants'
 
 class Cell
 

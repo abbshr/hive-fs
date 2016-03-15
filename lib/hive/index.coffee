@@ -3,7 +3,7 @@ path = require 'path'
 Index = require './seek'
 Slot = require './slot'
 {rm: unorderlstRm} = require '../util/unorderlst'
-{UNITSIZE, BLKSIZE} = require '../constants'
+{UNIT_SIZE, BLK_SIZE} = require '../constants'
 
 class Hive
   # parameters
@@ -22,27 +22,18 @@ class Hive
     @index = new Index producer: args.rw, file: seekFile
     @slot = new Slot producer: args.rw, file: slotFile
 
-    @_recordFile = openSync recordFile, 'a+'
+    @_recordFile = openSync recordFile, 'w+'
     @_size = @_updateSize()
     @_freeSlotLst = []
     @_blklenMap = []
     @_init() if @_size > 0
+    @_intervalWriteback() if args.rw
 
   _init: ->
     buffer = Buffer @_size
     readSync @_recordFile, buffer, 0, @_size, 0
     @_freeSlotLst = @_unpack buffer
     @_blklenMap = @_yieldFreemap @_freeSlotLst
-
-  # _writeback: ->
-  #   return if @_closed
-  #   @_timer = setTimeout =>
-  #     stash = ([num, item.len] for item, num in @_freeSlotLst when item?)
-  #     buffer = Buffer UNITSIZE * stash.length
-  #     @_pack unit, stash[i]... for unit, i in buffer by UNITSIZE
-  #
-  #     @_writeback()
-  #   , 30 * 1000
 
   _updateSize: ->
     {size} = fstatSync @_recordFile
@@ -53,7 +44,7 @@ class Hive
     map[level].push elem
 
   _cellBlklen: (size) ->
-    Math.ceil size / BLKSIZE
+    Math.ceil size / BLK_SIZE
 
   _yieldFreemap: (freeslotLst) ->
     freemap = []
@@ -65,14 +56,14 @@ class Hive
     freelst = []
     curr = prev = next = null
 
-    if buffer.length is UNITSIZE
+    if buffer.length is UNIT_SIZE
       curr = buffer.readUInt32BE 0
       len = buffer[4]
       freelst[curr] = {prev, next, len}
       return freelst
 
-    for _, i in buffer[...-UNITSIZE] by UNITSIZE
-      next = buffer.readUInt32BE i + UNITSIZE
+    for _, i in buffer[...-UNIT_SIZE] by UNIT_SIZE
+      next = buffer.readUInt32BE i + UNIT_SIZE
       curr = buffer.readUInt32BE i
       len = buffer[i + 4]
       freelst[curr] = {prev, next, len}
@@ -84,13 +75,13 @@ class Hive
     freelst[curr] = {prev, next, len}
     freelst
 
-  _pack: (buffer, curr, len) ->
-    buffer.writeUInt32BE curr
-    buffer[UNITSIZE - 1] = len
+  _pack: (buffer, i, curr, len) ->
+    buffer.writeUInt32BE curr, i
+    buffer[i + UNIT_SIZE - 1] = len
 
   _mergeFreeblk: (seek, len) ->
     # slot offset
-    curr = seek // BLKSIZE
+    curr = seek // BLK_SIZE
     next = pnext = null
     prev = nprev = null
     nnext = null
@@ -165,7 +156,7 @@ class Hive
       else
         @_freeSlotLst[prev]?.next = next
         @_freeSlotLst[next]?.prev = prev
-      return curr * BLKSIZE
+      return curr * BLK_SIZE
 
     @slot.size
 
@@ -191,7 +182,7 @@ class Hive
         return callback null if timestamp > ts
         diff = blklen - len
         if diff < 0
-          freeSeek = seek + blklen * BLKSIZE
+          freeSeek = seek + blklen * BLK_SIZE
           @_mergeFreeblk freeSeek, -diff
         else if diff > 0
           @_mergeFreeblk seek, len
@@ -221,7 +212,23 @@ class Hive
 
   close: (callback) ->
     @index.close => @_close => @slot.close =>
-      # @_closed = yes
+      @_closed = yes
+      clearTimeout @_timer
       @_writeback -> callback()
+
+  _intervalWriteback: =>
+    return if @_closed
+    @_timer = setTimeout =>
+      @_writeback @_intervalWriteback
+    , 20 * 1000
+
+  _writeback: (done) ->
+    stash = ([num, item.len] for item, num in @_freeSlotLst when item?)
+    return done() unless stash.length
+    buffer = Buffer UNIT_SIZE * stash.length
+    @_pack buffer, i * UNIT_SIZE, curr, len for [curr, len], i in stash
+    write @_recordFile, buffer, 0, buffer.length, 0, (err) ->
+      console.log err if err?
+      done()
 
 module.exports = Hive

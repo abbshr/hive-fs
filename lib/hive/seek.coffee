@@ -1,9 +1,11 @@
 {openSync, readSync, write, read, fstatSync, close} = require 'fs'
-{TUPLESIZE, NULL, FREE, USED} = require '../constants'
+{TUPLESTATE_SIZE, SEEK_SIZE, FRAGMENTLEN_SIZE, TIMESTAMP_SIZE, IDX_SIZE, NULL, FREE, USED} = require '../constants'
+
+TUPLE_SIZE = TUPLESTATE_SIZE + SEEK_SIZE + FRAGMENTLEN_SIZE + TIMESTAMP_SIZE + IDX_SIZE
 
 class Index
 
-  # TUPLESIZE: 270
+  # TUPLE_SIZE: 270
   # NULL: 0x00
   # FREE: 0x00
   # USED: 0x01
@@ -12,7 +14,7 @@ class Index
     flag = if args.producer then 'a+' else 'r'
     @_seekFile = openSync args.file, flag
     @_size = @updateSize()
-    @_tupleCount = @_size // TUPLESIZE
+    @_tupleCount = @_size // TUPLE_SIZE
     @_cache = {}
     @_freelst = []
     @_init() if @_size > 0
@@ -29,7 +31,7 @@ class Index
   _getAvailiable: ->
     if @_freelst.length > 0
       pos = @_freelst.pop()
-      [pos * TUPLESIZE, pos]
+      [pos * TUPLE_SIZE, pos]
     else
       [@_size, @_tupleCount++]
 
@@ -40,7 +42,7 @@ class Index
     if idx of @_cache
       @_updateMeta idx, seek, len, timestamp, callback
     else
-      tuple = Buffer TUPLESIZE
+      tuple = Buffer TUPLE_SIZE
       idxData = @_pack tuple, idx, seek, len, timestamp, USED
       [location, pos] = @_getAvailiable()
       @_cache[idx] = {seek, len, timestamp, pos}
@@ -51,12 +53,12 @@ class Index
         callback err
 
   _updateMeta: (idx, seek, len, timestamp, callback) ->
-    meta = Buffer 9
+    meta = Buffer SEEK_SIZE + FRAGMENTLEN_SIZE + TIMESTAMP_SIZE
     meta.writeUInt32BE seek
-    meta[4] = len
-    meta.writeDoubleBE timestamp, 5
+    meta[SEEK_SIZE] = len
+    meta.writeDoubleBE timestamp, SEEK_SIZE + FRAGMENTLEN_SIZE
 
-    location = @_cache[idx].pos * TUPLESIZE + 1
+    location = @_cache[idx].pos * TUPLE_SIZE + 1
     Object.assign @_cache[idx], {seek, len, timestamp}
 
     write @_seekFile, meta, 0, meta.length, location, (err, byte) =>
@@ -81,14 +83,14 @@ class Index
     #       tuple.pos += @_tupleCount for _, tuple of tmpcache
     #       Object.assign @_cache, tmpcache
     #       @_freelst.push (@_tupleCount + i for i in tmpfreelst)...
-    #       @_tupleCount = @_size // TUPLESIZE
+    #       @_tupleCount = @_size // TUPLE_SIZE
     #       callback null, @_cache[idx]
 
   drop: (idx, callback) ->
     if idx of @_cache
       freepos = @_cache[idx].pos
       @_freelst.push freepos
-      location = freepos * TUPLESIZE
+      location = freepos * TUPLE_SIZE
       delete @_cache[idx]
       state = Buffer [FREE]
       write @_seekFile, state, 0, 1, location, (err, byte) =>
@@ -107,9 +109,9 @@ class Index
   _unpack: (buffer) ->
     [idxlst, freelst] = [{}, []]
 
-    for _, i in buffer by TUPLESIZE
+    for _, i in buffer by TUPLE_SIZE
       state = buffer[i]
-      pos = i // TUPLESIZE
+      pos = i // TUPLE_SIZE
       if state is FREE
         freelst.push pos
       else
@@ -126,15 +128,15 @@ class Index
 
   _arrange: (callback = ->) ->
     @_tupleCount = count = @_tupleCount - @_freelst.length
-    @_size = @_tupleCount * TUPLESIZE
+    @_size = @_tupleCount * TUPLE_SIZE
     return callback() if count is 0
 
-    dirty = Buffer count * TUPLESIZE
+    dirty = Buffer count * TUPLE_SIZE
     i = 0
     for idx, info of @_cache
       {seek, len, timestamp} = info
-      info.pos = i // TUPLESIZE
-      tuple = dirty[i ... i = i + TUPLESIZE]
+      info.pos = i // TUPLE_SIZE
+      tuple = dirty[i ... i = i + TUPLE_SIZE]
       @_pack tuple, idx, seek, len, timestamp, USED
 
     fs.writeFile @_file, dirty, (err) -> callback err

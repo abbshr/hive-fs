@@ -1,8 +1,11 @@
 module.exports =
-  BYTESIZE: 4
-  TUPLESIZE: 270
+  BYTE_SIZE: 4
+  SEEK_SIZE: 4
+  FRAGMENTLEN_SIZE: 1
+  TIMESTAMP_SIZE: 8
+  IDX_SIZE: 32
   NULL: 0x00
   FREE: 0x00
   USED: 0x01
-  BLKSIZE: 20# 2 ** 10 # 1KB per slot
-  UNITSIZE: 5
+  BLK_SIZE: 20 # 20 Byte per slot
+  UNIT_SIZE: 5

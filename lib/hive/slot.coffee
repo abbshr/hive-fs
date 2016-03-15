@@ -1,6 +1,6 @@
 {openSync, write, read, fstatSync, close} = require 'fs'
 Cell = require '../cell'
-{BLKSIZE} = require '../constants'
+{BLK_SIZE} = require '../constants'
 
 class Slot
 
@@ -32,7 +32,7 @@ class Slot
           callback err
 
   skipto: (seek, len, callback) ->
-    size = BLKSIZE * len
+    size = BLK_SIZE * len
     read @_slotFile
       , Buffer(size)
       , 0
