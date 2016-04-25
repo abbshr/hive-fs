@@ -1,7 +1,7 @@
 {openSync, readSync, write, read, fstatSync, close} = require 'fs'
 {TUPLESTATE_SIZE, SEEK_SIZE, FRAGMENTLEN_SIZE, TIMESTAMP_SIZE, IDX_SIZE, NULL, FREE, USED} = require '../constants'
 
-TUPLE_SIZE = TUPLESTATE_SIZE + SEEK_SIZE + FRAGMENTLEN_SIZE + TIMESTAMP_SIZE + IDX_SIZE
+TUPLE_SIZE = 1 + SEEK_SIZE + FRAGMENTLEN_SIZE + TIMESTAMP_SIZE + IDX_SIZE
 
 class Index
 
@@ -11,8 +11,9 @@ class Index
   # USED: 0x01
 
   constructor: (args) ->
+    {file: @path}=  args
     flag = if args.producer then 'a+' else 'r'
-    @_seekFile = openSync args.file, flag
+    @_seekFile = openSync @path, flag
     @_size = @updateSize()
     @_tupleCount = @_size // TUPLE_SIZE
     @_cache = {}
@@ -124,14 +125,18 @@ class Index
 
     [idxlst, freelst]
 
-  close: (callback = ->) -> close @_seekFile, (err) => @_arrange callback
-
+  close: (callback = ->) -> 
+    unless @_closed
+      @_arrange => close @_seekFile, (err) =>
+        @_closed = yes
+        callback err
+        
   _arrange: (callback = ->) ->
-    @_tupleCount = count = @_tupleCount - @_freelst.length
+    @_tupleCount = @_tupleCount - @_freelst.length
+    @_freelst = []
+    
     @_size = @_tupleCount * TUPLE_SIZE
-    return callback() if count is 0
-
-    dirty = Buffer count * TUPLE_SIZE
+    dirty = Buffer @_size
     i = 0
     for idx, info of @_cache
       {seek, len, timestamp} = info
@@ -139,6 +144,6 @@ class Index
       tuple = dirty[i ... i = i + TUPLE_SIZE]
       @_pack tuple, idx, seek, len, timestamp, USED
 
-    fs.writeFile @_file, dirty, (err) -> callback err
+    fs.writeFile @path, dirty, callback
 
 module.exports = Index
