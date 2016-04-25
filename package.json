@@ -7,5 +7,8 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "ran <abbshrsoufii@gmail.com>",
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "archangel-util": "^1.0.0"
+  }
 }
