@@ -1,8 +1,8 @@
-{openSync, readSync, write, read, fstatSync, close} = require 'fs'
+{openSync, readSync, write, read, fstatSync, closeSync, writeFile} = require 'fs'
 path = require 'path'
 Index = require './seek'
 Slot = require './slot'
-{rm: unorderlstRm} = require '../util/unorderlst'
+{unorderList} = require 'archangel-util'
 {UNIT_SIZE, BLK_SIZE} = require '../constants'
 
 class Hive
@@ -15,14 +15,14 @@ class Hive
     dirname = args.dirname ? '/tmp'
     basename = args.basename ? 'hive-fs'
     baseFile = path.join dirname, basename
-    recordFile = "#{baseFile}.rcd"
+    @path = recordFile = "#{baseFile}.rcd"
     seekFile = "#{baseFile}.idx"
     slotFile = "#{baseFile}.slot"
 
     @index = new Index producer: args.rw, file: seekFile
     @slot = new Slot producer: args.rw, file: slotFile
 
-    @_recordFile = openSync recordFile, 'w+'
+    @_recordFile = openSync recordFile, 'a+'
     @_size = @_updateSize()
     @_freeSlotLst = []
     @_blklenMap = []
@@ -32,6 +32,7 @@ class Hive
   _init: ->
     buffer = Buffer @_size
     readSync @_recordFile, buffer, 0, @_size, 0
+    closeSync @_recordFile
     @_freeSlotLst = @_unpack buffer
     @_blklenMap = @_yieldFreemap @_freeSlotLst
 
@@ -46,7 +47,7 @@ class Hive
   _cellBlklen: (size) ->
     Math.ceil size / BLK_SIZE
 
-  _yieldFreemap: (freeslotLst) ->
+  _yieldFreemap: (freeSlotLst) ->
     freemap = []
     for item, curr in freeSlotLst when item?
       @_levelLstAppend freemap, item.len, curr
@@ -117,14 +118,14 @@ class Hive
       # merge with prev
       item = @_freeSlotLst[prev]
       item.len += len
-      unorderlstRm @_blklenMap[plen], prev
+      unorderList.rm @_blklenMap[plen], prev
       if curr + len is next
         # merge with prev & next
         item.next = nnext
         item.len += nlen
         delete @_freeSlotLst[next]
         # @_freeSlotLst.splice next, 1
-        unorderlstRm @_blklenMap[nlen], next
+        unorderList.rm @_blklenMap[nlen], next
 
       @_levelLstAppend @_blklenMap, item.len, prev
     else
@@ -137,7 +138,7 @@ class Hive
         item.len += nlen
         delete @_freeSlotLst[next]
         # @_freeSlotLst.splice next, 1
-        unorderlstRm @_blklenMap[nlen], next
+        unorderList.rm @_blklenMap[nlen], next
 
       @_levelLstAppend @_blklenMap, item.len, curr
 
@@ -160,7 +161,7 @@ class Hive
 
     @slot.size
 
-  _close: (callback) -> close @_recordFile, callback
+  # _close: (callback) -> close @_recordFile, callback
 
   _alloc: (idx, seek, blklen, ts, cell, callback) ->
     @index.ensure idx, seek, blklen, ts, (err) =>
@@ -211,10 +212,10 @@ class Hive
         callback null
 
   close: (callback) ->
-    @index.close => @_close => @slot.close =>
+    @index.close =>
       @_closed = yes
       clearTimeout @_timer
-      @_writeback -> callback()
+      @slot.close callback
 
   _intervalWriteback: =>
     return if @_closed
@@ -223,12 +224,11 @@ class Hive
     , 20 * 1000
 
   _writeback: (done) ->
+    return if @_closed
     stash = ([num, item.len] for item, num in @_freeSlotLst when item?)
     return done() unless stash.length
     buffer = Buffer UNIT_SIZE * stash.length
     @_pack buffer, i * UNIT_SIZE, curr, len for [curr, len], i in stash
-    write @_recordFile, buffer, 0, buffer.length, 0, (err) ->
-      console.log err if err?
-      done()
+    fs.writeFile @path, buffer, done
 
 module.exports = Hive
