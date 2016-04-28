@@ -1,4 +1,4 @@
-{openSync, readSync, write, read, fstatSync, close} = require 'fs'
+{openSync, readSync, write, read, fstatSync, close, writeFile} = require 'fs'
 {TUPLESTATE_SIZE, SEEK_SIZE, FRAGMENTLEN_SIZE, TIMESTAMP_SIZE, IDX_SIZE, NULL, FREE, USED} = require '../constants'
 
 TUPLE_SIZE = 1 + SEEK_SIZE + FRAGMENTLEN_SIZE + TIMESTAMP_SIZE + IDX_SIZE
@@ -144,6 +144,6 @@ class Index
       tuple = dirty[i ... i = i + TUPLE_SIZE]
       @_pack tuple, idx, seek, len, timestamp, USED
 
-    fs.writeFile @path, dirty, callback
+    writeFile @path, dirty, callback
 
 module.exports = Index
