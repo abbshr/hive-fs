@@ -1,3 +1,3 @@
 module.exports =
-  Cell: require './lib/cell'
-  Hive: require './lib/hive'
+  Chunk: require './lib/chunk'
+  Hive: require './lib'
