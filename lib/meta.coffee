@@ -1,19 +1,13 @@
 {openSync, readSync, write, read, fstatSync, close, writeFile} = require 'fs'
-{TUPLESTATE_SIZE, SEEK_SIZE, FRAGMENTLEN_SIZE, TIMESTAMP_SIZE, IDX_SIZE, NULL, FREE, USED} = require '../constants'
+{TUPLESTATE_SIZE, SEEK_SIZE, FRAGMENTLEN_SIZE, TIMESTAMP_SIZE, IDX_SIZE, NULL, FREE, USED} = require './constants'
 
-TUPLE_SIZE = 1 + SEEK_SIZE + FRAGMENTLEN_SIZE + TIMESTAMP_SIZE + IDX_SIZE
+TUPLE_SIZE = 1 + SEEK_SIZE + FRAGMENTLEN_SIZE + IDX_SIZE
 
-class Index
-
-  # TUPLE_SIZE: 270
-  # NULL: 0x00
-  # FREE: 0x00
-  # USED: 0x01
+class Meta
 
   constructor: (args) ->
     {file: @path}=  args
-    flag = if args.producer then 'a+' else 'r'
-    @_seekFile = openSync @path, flag
+    @_seekFile = openSync @path, "a+"
     @_size = @updateSize()
     @_tupleCount = @_size // TUPLE_SIZE
     @_cache = {}
@@ -36,33 +30,28 @@ class Index
     else
       [@_size, @_tupleCount++]
 
-  ensure: (idx, seek, len, timestamp, callback) ->
-    if @_flag is 'r'
-      return callback new Error "Can not ensure Index in Consumer mode"
-
+  ensure: (idx, seek, len, callback) ->
     if idx of @_cache
-      @_updateMeta idx, seek, len, timestamp, callback
+      @_updateMeta idx, seek, len, callback
     else
       tuple = Buffer TUPLE_SIZE
-      idxData = @_pack tuple, idx, seek, len, timestamp, USED
+      idxData = @_pack tuple, idx, seek, len, USED
       [location, pos] = @_getAvailiable()
-      @_cache[idx] = {seek, len, timestamp, pos}
-
-      write @_seekFile, idxData, 0, idxData.length, location, (err, byte) =>
-        unless err?
-          @_size += byte if location is @_size
+      @_cache[idx] = {seek, len, pos}
+      @_size += idxData.length if location is @_size
+      write @_seekFile, idxData, 0, idxData.length, location, (err) ->
         callback err
 
-  _updateMeta: (idx, seek, len, timestamp, callback) ->
-    meta = Buffer SEEK_SIZE + FRAGMENTLEN_SIZE + TIMESTAMP_SIZE
+  _updateMeta: (idx, seek, len, callback) ->
+    meta = Buffer SEEK_SIZE + FRAGMENTLEN_SIZE
     meta.writeUInt32BE seek
     meta[SEEK_SIZE] = len
-    meta.writeDoubleBE timestamp, SEEK_SIZE + FRAGMENTLEN_SIZE
+    # meta.writeDoubleBE timestamp, SEEK_SIZE + FRAGMENTLEN_SIZE
 
     location = @_cache[idx].pos * TUPLE_SIZE + 1
-    Object.assign @_cache[idx], {seek, len, timestamp}
-
-    write @_seekFile, meta, 0, meta.length, location, (err, byte) =>
+    Object.assign @_cache[idx], {seek, len}
+    
+    write @_seekFile, meta, 0, meta.length, location, (err) ->
       callback err
 
   seekfor: (idx, callback) ->
@@ -94,17 +83,17 @@ class Index
       location = freepos * TUPLE_SIZE
       delete @_cache[idx]
       state = Buffer [FREE]
-      write @_seekFile, state, 0, 1, location, (err, byte) =>
+      write @_seekFile, state, 0, 1, location, (err) ->
         callback err
     else
       callback null
 
-  _pack: (tuple, idx, seek, len, timestamp, state) ->
+  _pack: (tuple, idx, seek, len, state) ->
     tuple[0] = state
     tuple.writeUInt32BE seek, 1
     tuple[5] = len
-    tuple.writeDoubleBE timestamp, 6
-    offset = 14 + tuple.utf8Write idx, 14
+    # tuple.writeDoubleBE timestamp, 6
+    offset = 6 + tuple.utf8Write idx, 6
     tuple.fill NULL, offset if offset < tuple.length
 
   _unpack: (buffer) ->
@@ -118,17 +107,17 @@ class Index
       else
         seek = buffer.readUInt32BE i + 1
         len = buffer[i + 5]
-        timestamp = buffer.readDoubleBE i + 6
-        nullbyte = buffer.indexOf NULL, i + 14
-        idx = buffer.toString 'utf-8', i + 14, nullbyte if !!~nullbyte
-        idxlst[idx] = {seek, len, timestamp, pos}
+        # timestamp = buffer.readDoubleBE i + 6
+        nullbyte = buffer.indexOf NULL, i + 6
+        idx = buffer.toString 'utf-8', i + 6, nullbyte if !!~nullbyte
+        idxlst[idx] = {seek, len, pos}
 
     [idxlst, freelst]
 
   close: (callback = ->) -> 
     unless @_closed
+      @_closed = yes
       @_arrange => close @_seekFile, (err) =>
-        @_closed = yes
         callback err
         
   _arrange: (callback = ->) ->
@@ -139,11 +128,11 @@ class Index
     dirty = Buffer @_size
     i = 0
     for idx, info of @_cache
-      {seek, len, timestamp} = info
+      {seek, len} = info
       info.pos = i // TUPLE_SIZE
       tuple = dirty[i ... i = i + TUPLE_SIZE]
-      @_pack tuple, idx, seek, len, timestamp, USED
+      @_pack tuple, idx, seek, len, USED
 
     writeFile @path, dirty, callback
 
-module.exports = Index
+module.exports = Meta
