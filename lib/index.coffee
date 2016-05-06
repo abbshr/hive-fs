@@ -173,6 +173,7 @@ class Hive extends EventEmitter
       @slot.push seek, chunk, -> callback()
 
   write: (idx, value, callback) ->
+    # setImmediate callback
     chunk = @slot.alloc value
     {blklen, size} = chunk
 

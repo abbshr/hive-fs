@@ -56,7 +56,7 @@ class Meta
 
   seekfor: (idx, callback) ->
     # {seek} = @_cache[idx]
-    callback null, @_cache[idx]
+    setImmediate callback, null, @_cache[idx]
     # if seek?
     #   callback null, @_cache[idx]
     # else
@@ -86,7 +86,7 @@ class Meta
       write @_seekFile, state, 0, 1, location, (err) ->
         callback err
     else
-      callback null
+      setImmediate callback, null
 
   _pack: (tuple, idx, seek, len, state) ->
     tuple[0] = state
