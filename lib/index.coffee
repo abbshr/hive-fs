@@ -220,6 +220,8 @@ class Hive extends EventEmitter
     for idx, {seek, len} of @index._cache when pattern?.test(idx) ? on
       @slot.skipto seek, len, do (idx) => (err, data) => @emit "data", idx, data
 
+    this
+
   close: (callback) ->
     return if @_closed
     @_closed = yes
