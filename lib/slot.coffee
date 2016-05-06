@@ -18,18 +18,23 @@ class Slot
   incSize: (seek, size) ->
     @size += size if seek is @size
 
-  push: (seek, {buffer: {head, payload}, size}, callback) ->
+  push: (seek, {buffer}, callback) ->
     return if @_closed
     # @size += size if seek is @size
     write @_slotFile
-      , head
+      , buffer
       , 0
-      , head.length, seek, (err, byte, buffer) =>
-        write @_slotFile
-          , payload
-          , 0
-          , payload.length, seek + byte, (err) ->
-            callback err
+      , buffer.length, seek, ->
+        callback()
+    # write @_slotFile
+    #   , head
+    #   , 0
+    #   , head.length, seek, (err, byte, buffer) =>
+    #     write @_slotFile
+    #       , payload
+    #       , 0
+    #       , payload.length, seek + byte, (err) ->
+    #         callback err
         
   skipto: (seek, len, callback) ->
     return if @_closed

@@ -17,8 +17,8 @@ d = (k)->
     console.info "github:#{k} write finished"
     # hive.seek "github:#{k}", (err, value) ->
       # console.log value.following
-    hive.free "github:#{k}", (err) ->
-      console.log "deleted github:#{k}"
+    # hive.free "github:#{k}", (err) ->
+    #   console.log "deleted github:#{k}"
 
 console.time 0
 d i for i in [1..10000]
