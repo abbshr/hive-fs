@@ -217,9 +217,14 @@ class Hive extends EventEmitter
               .replace /\*/g, ".*"
       pattern = new RegExp "^#{regstr}$"
     
-    for idx, {seek, len} of @index._cache when pattern?.test(idx) ? on
-      @slot.skipto seek, len, do (idx) => (err, data) => @emit "data", idx, data
+    acc = 0
+    task = for idx, {seek, len} of @index._cache when pattern?.test(idx) ? on
+      @slot.skipto seek, len, do (idx) => (err, data) => 
+        acc++
+        @emit "data", idx, data
+        @emit "end" if acc is task.length
 
+    if task.length is 0 then setImmediate => @emit "end" 
     this
 
   close: (callback) ->
