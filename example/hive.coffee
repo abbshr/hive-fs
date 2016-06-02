@@ -12,18 +12,26 @@ data =
 exports.data = data
 exports.hive = hive
 
-d = (k)->
-  hive.write "github:#{k}", data, (err) ->
-    console.info "github:#{k} write finished"
-    # hive.seek "github:#{k}", (err, value) ->
-      # console.log value.following
-    # hive.free "github:#{k}", (err) ->
-    #   console.log "deleted github:#{k}"
+# d = (k)->
+#   # hive.write "github:#{k}", data, (err) ->
+#   #   console.info "github:#{k} write finished"
+#   hive.seek "github:#{k}", (err, value) ->
+#     console.log value.following
+#     # hive.free "github:#{k}", (err) ->
+#     #   console.log "deleted github:#{k}"
 
 console.time 0
-d i for i in [1..10000]
-console.timeEnd 0
-process.on 'SIGINT', -> 
-  hive.close -> 
-    console.log 'closed'
-    process.exit()
+# d i for i in [1..10000]
+# console.timeEnd 0
+# process.on 'SIGINT', ->
+#   hive.close -> 
+#     console.log 'closed'
+#     process.exit()
+hive.match()
+  .on 'data', (idx, d) -> console.log idx
+  .on 'end', -> 
+    console.log 'end'
+    console.timeEnd 0
+    hive.close -> 
+      console.log 'closed'
+      process.exit()

@@ -95,6 +95,7 @@ class Meta
     # tuple.writeDoubleBE timestamp, 6
     offset = 6 + tuple.utf8Write idx, 6
     tuple.fill NULL, offset if offset < tuple.length
+    tuple
 
   _unpack: (buffer) ->
     [idxlst, freelst] = [{}, []]
